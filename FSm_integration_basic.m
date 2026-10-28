@@ -1,36 +1,58 @@
 clear; close all; clc;
-F_r= false;
+time = 0:20/1999:20;
+
 C = false;
-T = 0:20/1999:20;
-T_FP = normrnd(17,0.5);
+T_FP = 20*randi([int16(1999*15/20) int16(1999*22/20)])/1999;
 T_fr = rand();
 F_r = true;
-fprintf("Print enabled")
+T_start = 20*randi([50 100])/1999;
+q_printer = 1;
+
+T_C = time(1,1500);
+
+
+for T = time
+
+    if T == T_start
+        fprintf("Print enabled\n")
+        q_printer = 2;
+       
+    end
+    
+    if q_printer == 2
+        q_printer = 3;
+        fprintf("Printing\n")
+
+    end
+     
+    if C == true && T == T_C
+        q_printer = 4
+        fprintf("Filament colour needs switching out\n")
+        pause(3)
+        fprintf("Filament colour switched out\n")
+        q_printer = 2 
+    end 
+
+    if T == T_FP
+    fprintf("Filament needs replacing\n")
+    pause(10)
+    fprintf("Filament is replaced\n")
+    q_printer = 2;
+    
+    end
+    
+    if T == 20
+       fprintf("Print is done")
+       q_printer = 1;
+    end
+
+end
+
+
+J = 0.15;
 
 
 
-
-if F_r == true
-    a = 0;
-    b = 1;
-    c = 1;
-   
-    r = ones(1,length(T))*normrnd(0,1.5);
-    xr = b *cos(2*pi()*T/20);
-    yr = c *sin(2*pi()*T/20);
-    figure
-    subplot(2,1,1)
-    plot(yr,xr)
-    subplot(2,1,2)
-    plot(T,yr,T,xr)
-    fprintf("Print succesful"\n)
-    T_eq = ones(1,length(T))*210;
-
-T_noz = T_eq - exp(-T/10).*r.*cos(-pi()*T);
-end    
-
-
-
-
+fprintf("Moving to (%4.2f, 0)", J)
 
 

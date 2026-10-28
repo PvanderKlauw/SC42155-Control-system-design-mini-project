@@ -1,7 +1,6 @@
 % Ellipse
 %Parameter Definition
 clear; close all; clc;
-
 p=Params();
 dt=0.01;  %time step [s]
 Tf=2; 
@@ -45,90 +44,204 @@ y0=initialState(yr(1),yrd(1),yrdd(1),p,p.by);
 xy_start = cat(1,x0,y0);
 
 
-%simulation (infinity)
-z=lsim(sys,uy,t,xy_start); %(ss, input, time)
-%zy=lsim(sys_ax,uy,t,y0);
 
-%start of 1.6
-vel = sqrt(z(:).^2 + z(:,5).^2); %vel mag
-s_path = cumtrapz(t, vel); %cumulative distance along path
-L_total = s_path(end); %total length of printed ellipse
+%%State codification
+% This is an indication of the various states all indicated with shorthand
+% and then an explainer of what they are.\
 
-%Thermal Discretization
-dx = 0.001; %spatial resolution [m]
-N_nodes = ceil(L_total / dx) + 1;%total spatial nodes
-T = NaN(N_nodes, 1); %Initialize temperature array (NaN = unprinted)
+% State 1: Inert, in this state the printer does not do anything yet and
+% waits for a start signal. As implementing a starting signal in code is a
+% bit tedious the decision for a wait time has been made. Lastly this is
+% the end state in which the printer will be after it has finished
+% printing.
 
-%Thermal diffusivity
-alpha = p.k / (p.rho * p.cp);
-C1 = alpha * dt / dx^2;
-C2 = (p.hb / (p.rho * p.cp * p.a)) * dt;
-C3 = (3 * p.hair / (p.rho * p.cp * p.a)) * dt;
+% State 2: Printing, in this state the printer follows the set pattern as
+% defined by the given code. This is what has already been implemented.
 
-%Target steady-state uniform temperature
-T_eq = (p.hb * p.Tb + 3 * p.hair * p.Te) / (p.hb + 3 * p.hair);
-uniform_tolerance = 0.1; % [C]
+% State 3: Filament change, in this state the filament has to be changed
+% out. Here the head will first move to whatever wall is closer and then to
+% the wipe tower (which has been defined previously as 0,0). This has two
+% mechanisms which can trigger this. As it will be simulated multiple times
+% the running out of filament will be modeled as an event happening with a
+% normal distribution centered around 15 seconds. This state can logically
+% only happen once. Another way by which this can be triggered is at a
+% certain signal C becomes true at certain time in the simulation. This has
+% to be configured initially. 
 
-Phi=zeros(N_nodes+1, 1);
-f_T=zeros(N_nodes, 1);
+% Lastly there are also states for the nozzle temperature exceeding a
+% certain maximum or minimum. In this the nozzle stops printing to either
+% feed more current or reduce it to make sure that nozzle temperature is
+% within bounds.
 
-%Active Printing 
-for n = 1:(length(t)-1)
-    current_length = s_path(n); %nodes currently active based on distance traveled
-    active_idx = floor(current_length / dx) + 1;
-    T(active_idx) = p.Tn; %BCs
-    T_new = T;
-    f_T = C2*(p.Tb - T) - C3*(T - p.Te);
+%% Simulation config
+T_start = randi([10 25])/200; 
+q_print = 1;
+C = false;
+T_C = 100/200;
+T_f = randi([150 201])/100;
+x_goal = false;
+y_goal = false;
+% State 1: Printing
+for W = t
+
+   if W == T_start
+        q_print = 7;
+        fprintf("Start simulation\n")
+   end
+   if  q_print == 7 
+    q_print = 2;  
     
-    if active_idx > 1 
-        Phi(2:active_idx) = (T(1:active_idx-1) - T(2:active_idx)) * C1;
-        Phi(1) = -Phi(2); %boundary flow
-        T_new(1) = T(1) + Phi(1) - Phi(2) + f_T(1); %(Phi_in-Phi_out+sources)
+    %simulation (infinity)
+    zx=lsim(sys,ux,t,xy_start); %(ss, input, time)
+    zy=lsim(sys,uy,t,xy_start);
+
+    %start of 1.6
+    vel = sqrt(zx(:,2).^2 + zy(:,5).^2); %vel mag
+    s_path = cumtrapz(t, vel); %cumulative distance along path
+    L_total = s_path(end); %total length of printed ellipse
+
+    %Thermal Discretization
+    dx = 0.001; %spatial resolution [m]
+    N_nodes = ceil(L_total / dx) + 1;%total spatial nodes
+    T = NaN(N_nodes, 1); %Initialize temperature array (NaN = unprinted)
+
+    %Thermal diffusivity
+    alpha = p.k / (p.rho * p.cp);
+    C1 = alpha * dt / dx^2;
+    C2 = (p.hb / (p.rho * p.cp * p.a)) * dt;
+    C3 = (3 * p.hair / (p.rho * p.cp * p.a)) * dt;
+
+    %Target steady-state uniform temperature
+    T_eq = (p.hb * p.Tb + 3 * p.hair * p.Te) / (p.hb + 3 * p.hair);
+    uniform_tolerance = 0.1; % [C]
+
+    Phi=zeros(N_nodes+1, 1);
+    f_T=zeros(N_nodes, 1);
+
+    %Active Printing 
+    for n = 1:(length(t)-1)
+        current_length = s_path(n); %nodes currently active based on distance traveled
+        active_idx = floor(current_length / dx) + 1;
+        T(active_idx) = p.Tn; %BCs
+        T_new = T;
+        f_T = C2*(p.Tb - T) - C3*(T - p.Te);
+    
+        if active_idx > 1 
+            Phi(2:active_idx) = (T(1:active_idx-1) - T(2:active_idx)) * C1;
+            Phi(1) = -Phi(2); %boundary flow
+            T_new(1) = T(1) + Phi(1) - Phi(2) + f_T(1); %(Phi_in-Phi_out+sources)
+        end
+    
+        if active_idx > 2
+            %interior nodes (Phi_in - Phi_out + sources)
+            i = 2:(active_idx-1);
+            T_new(i) = T(i) + Phi(i) - Phi(i+1) + f_T(i);
+        end
+    
+        T = T_new;
+    end
+
+    T(isnan(T))=p.Tn;
+    % Post-Print Cooling
+    t_cool = t(end);
+    cooling = true;
+
+    while cooling
+        t_cool = t_cool + dt;
+        Phi(2:N_nodes) = (T(1:N_nodes-1) - T(2:N_nodes)) * C1;
+    
+        %Boundary flows
+        Phi_periodic = (T(N_nodes) - T(1)) * C1;
+        Phi(1) = Phi_periodic;
+        Phi(N_nodes+1) = Phi_periodic;
+    
+        %distributed sources
+        f_T = C2*(p.Tb - T) - C3*(T - p.Te);
+        T = T + Phi(1:N_nodes) - Phi(2:N_nodes+1) + f_T;
+        max_deviation = max(abs(T - T_eq));
+        if max_deviation < uniform_tolerance
+            cooling = false;
+        end
+    end
+  
+ 
+  end
+    % Checking that filament colour needs switching 
+    if C == true && W == T_C 
+        fprintf("Filament colour needs changing\n")
+        Xlog = xr(end);
+        Ylog = yr(end);
+        fprintf("Last location logged\n")
+        q_print = 3;
+    
+    % Checking that filament has ran out
+    elseif W == T_f 
+        fprintf("Filament has ran out\n")
+        Xlog = xr(end);
+        Ylog = yr(end);
+        fprintf("Last location logged\n")
+        q_print = 3;
+    end  
+   
+
+    %Deciding which direction to go in
+    if q_print == 3
+        if Xlog >= Ylog
+            fprintf("Moving to (%4.2f, 0)\n",Xlog)
+            q_print = 4; 
+        else
+            fprintf("Moving to (0, %4.2f)\n",Ylog)
+            q_print = 5;
+        end
+    end
+
+    if q_print == 4 || q_print == 5 
+        fprintf("Moving to (0,0)\n")
+        xr = 0;
+        yr = 0;
+        q_print = 6;
     end
     
-    if active_idx > 2
-        %interior nodes (Phi_in - Phi_out + sources)
-        i = 2:(active_idx-1);
-        T_new(i) = T(i) + Phi(i) - Phi(i+1) + f_T(i);
+    if q_print == 6
+       pause(4)
+       fprintf("Printing excess filament\n")
+       fprintf("Moving back to logged location\n")
+       xr = Xlog;
+       yr = Ylog;
+       q_print = 7;
     end
     
-    T = T_new;
+    if xr == xr(1,1)
+        x_goal = true;
+    end
+    if yr == yr(1,1)
+        y_goal = true;
+    end
+   if  x_goal == 1 && y_goal == 1 && q_print == 2
+       fprintf("The printing has finished\n")
+       q_print = 1;
+   end
 end
 
-T(isnan(T))=p.Tn;
-% Post-Print Cooling
-t_cool = t(end);
-cooling = true;
 
-while cooling
-    t_cool = t_cool + dt;
-    Phi(2:N_nodes) = (T(1:N_nodes-1) - T(2:N_nodes)) * C1;
-    
-    %Boundary flows
-    Phi_periodic = (T(N_nodes) - T(1)) * C1;
-    Phi(1) = Phi_periodic;
-    Phi(N_nodes+1) = Phi_periodic;
-    
-    %distributed sources
-    f_T = C2*(p.Tb - T) - C3*(T - p.Te);
-    T = T + Phi(1:N_nodes) - Phi(2:N_nodes+1) + f_T;
-    max_deviation = max(abs(T - T_eq));
-    if max_deviation < uniform_tolerance
-        cooling = false;
-    end
-end
-fprintf('Total required cooling time (Printing + Post-Cooling): %.2f seconds\n', t_cool);
-fprintf('Uniform equilibrium temperature reached: %.2f C\n', T_eq);
+
+
+
+
+
+
+
+%%
 
 %plotting
 figure;
 subplot(2,1,1);
 plot(t,ul,t,ur); ylabel('u [V]'); legend('u_l','u_r'); grid on;
 subplot(2,1,2);
-plot(t,z(:,1),t,z(:,4)); ylabel('Position [m]'); xlabel('t [s]'); legend('x(t)','y(t)'); grid on;
+plot(t,zx(:,1),t,zy(:,4)); ylabel('Position [m]'); xlabel('t [s]'); legend('x(t)','y(t)'); grid on;
 
 figure;
-plot(z(:,1),z(:,4)); axis equal; grid on;
+plot(zx(:,1),zy(:,4)); axis equal; grid on;
 xlabel('x [m]'); ylabel('y [m]');
 
 figure;
@@ -140,6 +253,7 @@ ylabel('Temperature [C]');
 title('Final Filament Temperature Distribution');
 grid on;
 
+%%
 function p = Params()
 
 p.rm=6e-3; %Motor pulley radius [m]
