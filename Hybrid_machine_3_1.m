@@ -1,4 +1,4 @@
-%Ellipse
+% Ellipse
 %Parameter Definition
 clear; close all; clc;
 
@@ -35,6 +35,8 @@ yrddd=b*w^3*-cos(w*t);
 %decoupled u's
 ux=axisVoltage(xrd,xrdd,xrddd,p,p.bx);
 uy=axisVoltage(yrd,yrdd,yrddd,p,p.by);
+u_conc = cat(1,ux,uy);
+
 [ul,ur]=voltagesLR(ux,uy);
 
 %initial states
@@ -44,11 +46,11 @@ xy_start = cat(1,x0,y0);
 
 
 %simulation (infinity)
-z=lsim(sys,ux,t,xy_start); %(ss, input, time)
+z=lsim(sys,uy,t,xy_start); %(ss, input, time)
 %zy=lsim(sys_ax,uy,t,y0);
 
 %start of 1.6
-vel = sqrt(z(:,2).^2); %+ zy(:,2).^2); %vel mag
+vel = sqrt(z(:,1).^2 + z(:,4).^2); %vel mag
 s_path = cumtrapz(t, vel); %cumulative distance along path
 L_total = s_path(end); %total length of printed ellipse
 
