@@ -43,7 +43,7 @@ y0=initialState(yr(1),yrd(1),yrdd(1),p,p.by);
 
 %simulation (infinity)
 zx=lsim(sys_ax,ux,t,x0); %(ss, input, time)
-zy=lsim(sys_ax,uy,t,y0);
+zy=lsim(sys_ay,uy,t,y0);
 
 %start of 1.6
 vel = sqrt(zx(:,2).^2 + zy(:,2).^2); %vel mag

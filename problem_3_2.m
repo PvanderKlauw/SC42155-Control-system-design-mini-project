@@ -1,0 +1,675 @@
+%Question 3.2 
+clear; close all; clc;
+%system params
+p = Params();
+dt = 0.01;      %time step [s]
+
+%Square Path & Reference Generation
+side_len = 0.08; %Square side length [m]
+corner_x = 0.12; corner_y = 0.12; %Bottom-left starting corner
+T_side = 1.0; 
+Tf = 4 * T_side; 
+t = (0:dt:Tf)';
+
+% Piecewise linear reference generation for a square
+xr = zeros(size(t));
+yr = zeros(size(t));
+xrd = zeros(size(t));
+yrd = zeros(size(t));
+xrdd = zeros(size(t));
+yrdd = zeros(size(t));
+xrddd = zeros(size(t));
+yrddd = zeros(size(t));
+
+for i = 1:numel(t)
+    ti = t(i);
+    if ti <= T_side
+        %Side 1: Bottom edge (left to right)
+        [xr(i), xrd(i), xrdd(i), xrddd(i)] = cubicSmooth(corner_x, corner_x + side_len, T_side, ti);
+        yr(i) = corner_y; yrd(i) = 0; yrdd(i) = 0; yrddd(i) = 0;
+    elseif ti <= 2*T_side
+        %Side 2: Right edge (bottom to top)
+        ti_local = ti - T_side;
+        xr(i) = corner_x + side_len; xrd(i) = 0; xrdd(i) = 0; xrddd(i) = 0;
+        [yr(i), yrd(i), yrdd(i), yrddd(i)] = cubicSmooth(corner_y, corner_y + side_len, T_side, ti_local);
+    elseif ti <= 3*T_side
+        %Side 3: Top edge (right to left)
+        ti_local = ti - 2*T_side;
+        [xr(i), xrd(i), xrdd(i), xrddd(i)] = cubicSmooth(corner_x + side_len, corner_x, T_side, ti_local);
+        yr(i) = corner_y + side_len; yrd(i) = 0; yrdd(i) = 0; yrddd(i) = 0;
+    else
+        %Side 4: Left edge (top to bottom)
+        ti_local = ti - 3*T_side;
+        xr(i) = corner_x; xrd(i) = 0; xrdd(i) = 0; xrddd(i) = 0;
+        [yr(i), yrd(i), yrdd(i), yrddd(i)] = cubicSmooth(corner_y + side_len, corner_y, T_side, ti_local);
+    end
+end
+
+shape = struct('cx',corner_x,'cy',corner_y,'a',side_len,'b',side_len,'w',0); %tracks location
+
+%arc length calculation for filament distance tracking
+v_ref = hypot(xrd, yrd); %vel maf
+s_ref = cumtrapz(t, v_ref); %cumulative distance along path
+
+%discrete simulation configuration
+p.F_enabled = true;
+F_distance = 0.20;   %meters of filament printed before running out
+F_tau = interp1(s_ref, t, F_distance, 'linear');
+
+p.T_start = 0.10;      %simulation start time [s]
+p.T_C = 0.50;          %color change trigger time [s]
+p.T_f = F_tau;         %filament progress [s]
+p.C_colour = false;    %show plots from both true and false
+
+%initial states
+x0_m = initialState(xr(1), xrd(1), xrdd(1), p, p.bx); 
+y0_m = initialState(yr(1), yrd(1), yrdd(1), p, p.by);
+xy_start = [x0_m; y0_m];
+
+%nozzle initial continuous state: [i_L, u_C, T_n]
+uc0 = sqrt((p.Tn - p.Te)*p.Rn / p.Rtn);
+nozzle_start = [uc0/p.Rn; uc0; p.Tn];
+
+%continuous state
+x0 = [xy_start; nozzle_start];
+u0 = [0; 0];
+
+%case starting point initialization
+q0 = initial_case(x0, u0, p);
+
+%hybrid system function call
+[t_sim, z, q_history, print_progress, u_used, u_n_used, heater_history, event_log, temperature_event_count] = ...
+    simulate_hybrid_system(x0, q0, p, t, xr, xrd, yr, yrd, s_ref, Tf, dt);
+
+%Cooling PDE funct call
+[T, x_axis, t_cool, thermal_time, thermal_mean, thermal_active] = ...
+    filamentCooling(t_sim, z, q_history, print_progress, t, s_ref, p, dt, true);
+
+%uniform temperature
+T_eq = (p.hb*p.Tb + 3*p.h_air*p.Te)/(p.hb + 3*p.h_air); %equilibrium temp
+L_total = s_ref(end); %total length of printed shape
+N_nodes = numel(x_axis); %matlab function to count number of elementts in x_axis
+
+fprintf('Cooling time of filament: %.2f s \n', t_cool); %how long to cool after being printed
+fprintf('Actual hybrid elapsed time until printing complete: %.2f seconds\n', t_sim(end));
+
+[ul_used, ur_used] = voltagesLR(u_used(:,1), u_used(:,2)); %converts control function into motor actuator commands
+
+%% Plotting
+figure;
+plot(z(:,1), z(:,4), 'b-', 'LineWidth', 1.5); axis equal; grid on;
+xlabel('x [m]'); ylabel('y [m]');
+title('Actual XY response including filament replacement detour for square');
+hold on; 
+plot(0, 0, 'ks', 'MarkerFaceColor', 'k');
+log_idx = find(strcmp(event_log(:,1), 'F') | strcmp(event_log(:,1), 'C'), 1);
+if ~isempty(log_idx)
+    Xlog = z(find(t_sim >= event_log{log_idx,2}, 1), 1);
+    Ylog = z(find(t_sim >= event_log{log_idx,2}, 1), 4);
+    plot(Xlog, Ylog, 'ro', 'MarkerFaceColor', 'r');
+end
+hold off;
+
+figure;
+x_axis = linspace(0, L_total, N_nodes);
+plot(x_axis, T, 'LineWidth', 1.5);
+yline(T_eq, 'r--', 'Steady State T_{eq}');
+xlabel('Position along Filament Path [m]');
+ylabel('Temperature [C]');
+title('Final Filament Temperature Distribution');
+grid on;
+
+figure;
+subplot(2,1,1);
+stairs(t_sim, q_history, 'LineWidth', 1.2); grid on;
+ylabel('q\_print'); title('Finite state machine over elapsed time');
+subplot(2,1,2);
+plot(t_sim, print_progress, 'LineWidth', 1.2); grid on;
+ylabel('Printer progress [s]'); xlabel('Elapsed time [s]');
+
+figure;
+plot(thermal_time, thermal_mean, 'LineWidth', 1.3); hold on;
+yline(T_eq, 'k:', 'Equilibrium'); hold off; grid on;
+xlabel('True elapsed time [s]'); ylabel('Mean deposited filament T [C]');
+legend('With interruption', 'Equilibrium', 'Location', 'best');
+title('Q1.6 cooling on true elapsed time');
+
+%%Functions
+% Hybrid system functions
+
+%to define each state a description is shown here:
+%State 1 & 2: Inert / Actively printing the trajectory
+%State 3: saves current position
+%State 4: Moves to wall (X)
+%State 5: Moves to wall (Y)
+%State 6: Moves to Wipe Tower
+%State 7: Wipes excess filament
+%State 8, 9, 10: Switching the nozzle heater off, loading new filament, and reheating.   
+%State 11: Returning to the saved position to resume printing.   
+% State 12 & 13: Temperature safety fault states (too hot / too cold).
+
+%determines inital case
+function q = initial_case(x0, u0, p)
+    q = 1;
+end
+
+%calculates time derivs for current continuous state
+function [dz, u, un, heater_on] = f(t, x, q, p, t_ref, xr, xrd, yr, yrd, aux)
+    u = compute_control_input(t, x, q, p, t_ref, xr, xrd, yr, yrd, aux); %gets reqd motor voltages and trajectory controls
+    dz_motor = p.A * x(1:6) + p.B * u; %computes motor states
+    
+    heater_on = aux.heater_on && (q ~= 12);
+    un = nozzleVoltage(x(9), heater_on, p, q);
+    dz_nozzle = [(un - x(8))/p.Ln;
+                 (x(7) - x(8)/p.Rn)/p.Cn;
+                 (x(8)^2/p.Rn - (x(9) - p.Te)/p.Rtn)/p.Ctn]; %computes thermal derivatives
+             
+    dz = [dz_motor; dz_nozzle]; %combines derivs
+end
+
+%continuous portion
+function [value, isterminal, direction] = make_events(t, x, q, p, aux)
+    switch q
+        case 1 
+            value = t - p.T_start;
+            isterminal = 1; direction = 1;
+            
+        case 2
+            t_shift = aux.t_shift;
+            t_ev_c = ternary(p.C_colour && ~aux.colour_triggered && ~aux.filament_triggered, p.T_C, 1e6);
+            t_ev_f = ternary(p.F_enabled && ~aux.filament_triggered && ~aux.colour_triggered, t_shift + p.T_f, 1e6);
+            t_ev_end = t_shift + aux.Tf;
+            
+            v1 = t - [t_ev_c; t_ev_f; t_ev_end];
+            v2 = x(9) - p.T_high;
+            v3 = x(9) - p.T_low;
+            
+            value = [v1; v2; v3];
+            isterminal = ones(size(value));
+            direction = [1; 1; 1; 1; -1];
+            
+        case {4, 5, 6, 11} %
+            err = norm([x(1) - aux.end_pos(1); x(4) - aux.end_pos(2)]) + norm([x(2); x(5)]);
+            value = max(err - 2e-3, aux.state_entry_time + aux.T_move - t);
+            isterminal = 1; direction = -1;
+            
+        case 7
+            value = t - (aux.state_entry_time + aux.T_wipe);
+            isterminal = 1; direction = 1;
+            
+        case 8
+            value = t - (aux.state_entry_time + aux.T_off);
+            isterminal = 1; direction = 1;
+            
+        case 9
+            value = t - (aux.state_entry_time + aux.T_load);
+            isterminal = 1; direction = 1;
+            
+        case 10
+            value = x(9) - (p.Tn - 2);
+            isterminal = 1; direction = 1;
+            
+        case 12
+            value = x(9) - p.T_high_reset;
+            isterminal = 1; direction = -1;
+            
+        case 13
+            value = x(9) - p.T_low_reset;
+            isterminal = 1; direction = 1;
+            
+        otherwise
+            value = 1; isterminal = 0; direction = 0;
+    end
+end
+
+%discrete portion
+function [x_plus, q_plus, aux_plus] = jump(t, x, q, p, aux, event_idx)
+    x_plus = x;
+    q_plus = q;
+    aux_plus = aux;
+    
+    switch q
+        case 1
+            q_plus = 2;
+            aux_plus.state_entry_time = t;
+            
+        case 2
+            if event_idx == 4
+                q_plus = 12;
+                aux_plus.hold_pos = [x(1); x(4)];
+                aux_plus.state_entry_time = t;
+                aux_plus.temp_events(1) = aux_plus.temp_events(1) + 1;
+            elseif event_idx == 5
+                q_plus = 13;
+                aux_plus.hold_pos = [x(1); x(4)];
+                aux_plus.state_entry_time = t;
+                aux_plus.temp_events(2) = aux_plus.temp_events(2) + 1;
+            elseif event_idx == 1
+                q_plus = 3;
+                aux_plus.colour_triggered = true;
+                aux_plus.Xlog = x(1); aux_plus.Ylog = x(4);
+                aux_plus.hold_pos = [x(1); x(4)];
+                aux_plus.event_log(end+1,:) = {'C', t, aux.tau};
+            elseif event_idx == 2
+                q_plus = 3;
+                aux_plus.filament_triggered = true;
+                aux_plus.Xlog = x(1); aux_plus.Ylog = x(4);
+                aux_plus.hold_pos = [x(1); x(4)];
+                aux_plus.event_log(end+1,:) = {'F', t, aux.tau};
+            elseif event_idx == 3
+                aux_plus.simulation_done = true;
+            end
+            
+        case 3
+            aux_plus.start_pos = [aux.Xlog; aux.Ylog];
+            if aux.Xlog >= aux.Ylog
+                q_plus = 4;
+                aux_plus.end_pos = [aux.Xlog; 0];
+            else
+                q_plus = 5;
+                aux_plus.end_pos = [0; aux.Ylog];
+            end
+            aux_plus.T_move = 0.5;
+            aux_plus.state_entry_time = t;
+            
+        case {4, 5}
+            q_plus = 6;
+            aux_plus.start_pos = [x(1); x(4)];
+            aux_plus.end_pos = [0; 0];
+            aux_plus.T_move = 0.5;
+            aux_plus.state_entry_time = t;
+            
+        case 6
+            q_plus = 7;
+            aux_plus.hold_pos = [0; 0];
+            aux_plus.state_entry_time = t;
+            
+        case 7
+            q_plus = 8;
+            aux_plus.heater_on = false;
+            aux_plus.event_log(end+1,:) = {'E', t, aux.tau};
+            aux_plus.state_entry_time = t;
+            
+        case 8
+            q_plus = 9;
+            aux_plus.state_entry_time = t;
+            
+        case 9
+            q_plus = 10;
+            aux_plus.heater_on = true;
+            aux_plus.state_entry_time = t;
+            
+        case 10
+            q_plus = 11;
+            aux_plus.start_pos = [x(1); x(4)];
+            aux_plus.end_pos = [aux.Xlog; aux.Ylog];
+            aux_plus.T_move = 0.6;
+            aux_plus.hold_pos = [aux.Xlog; aux.Ylog];
+            aux_plus.state_entry_time = t;
+            
+        case 11
+            q_plus = 2;
+            aux_plus.state_entry_time = t;
+            
+        case {12, 13}
+            q_plus = 2;
+            aux_plus.state_entry_time = t;
+    end
+end
+
+%combines continuous and discrete
+function [t_sim, z, q_history, print_progress, u_used, u_n_used, heater_history, event_log, temp_events] = ...
+    simulate_hybrid_system(x0, q0, p, t_ref, xr, xrd, yr, yrd, s_ref, Tf, dt)
+    
+    W = 0;
+    q = q0;
+    zk = x0;
+    t_max = Tf + 90;
+    
+    %initialize aux struct
+    aux.tau = 0;
+    aux.t_shift = 0;
+    aux.Tf = Tf;
+    aux.heater_on = true;
+    aux.state_entry_time = 0;
+    aux.colour_triggered = false;
+    aux.filament_triggered = false;
+    aux.simulation_done = false;
+    aux.Xlog = x0(1); aux.Ylog = x0(4);
+    aux.hold_pos = [x0(1); x0(4)];
+    aux.start_pos = [x0(1); x0(4)];
+    aux.end_pos = [x0(1); x0(4)];
+    aux.T_move = 0.5;
+    aux.T_wipe = 0.004 / 0.020;
+    aux.T_off = 0.10;
+    aux.T_load = 1.50;
+    aux.event_log = cell(0,3);
+    aux.temp_events = [0 0];
+    
+    t_sim = [];
+    z = [];
+    q_history = [];
+    print_progress = [];
+    u_used = [];
+    u_n_used = [];
+    heater_history = [];
+    
+    while ~aux.simulation_done && W < t_max
+        if q == 3
+            [zk, q, aux] = jump(W, zk, q, p, aux, 0);
+        end
+        
+        aux.t_shift = W - aux.tau;
+        
+        if q == 2
+            t_slice = t_ref(t_ref > aux.tau + 1e-9);
+            tspan = unique([W, aux.t_shift + t_slice(:)', t_max]);
+        else
+            tspan = unique([W, W+dt:dt:t_max, t_max]);
+        end
+        tspan = tspan(tspan >= W);
+        
+        opts = odeset('RelTol', 1e-7, 'AbsTol', 1e-9, 'MaxStep', dt, ...
+            'Events', @(tt, xx) make_events(tt, xx, q, p, aux));
+        
+        [tt, zz, ~, ~, ie] = ode45(@(tt, xx) f(tt, xx, q, p, t_ref, xr, xrd, yr, yrd, aux), tspan, zk, opts);
+        
+        if numel(tt) < 2 || tt(end) <= W + 1e-12
+            error('Solver stalled at t=%.6f s in state %d.', W, q);
+        end
+        
+        nr = numel(tt);
+        for j = 1:nr
+            [~, u_j, un_j, h_j] = f(tt(j), zz(j,:)', q, p, t_ref, xr, xrd, yr, yrd, aux);
+            u_used(end+1,:) = u_j';
+            u_n_used(end+1,1) = un_j;
+            heater_history(end+1,1) = h_j;
+        end
+        
+        t_sim = [t_sim; tt];
+        z = [z; zz];
+        q_history = [q_history; q * ones(nr, 1)];
+        
+        if q == 2
+            s_prog = tt - aux.t_shift;
+            print_progress = [print_progress; s_prog];
+            aux.tau = tt(end) - aux.t_shift;
+        else
+            print_progress = [print_progress; aux.tau * ones(nr, 1)];
+        end
+        
+        W = tt(end);
+        zk = zz(end,:)';
+        
+        if ~isempty(ie)
+            [zk, q, aux] = jump(W, zk, q, p, aux, ie(end));
+        end
+        
+        if q == 2 && aux.tau >= Tf - 1e-9
+            q = 1;
+            aux.simulation_done = true;
+            q_history(end) = q;
+            print_progress(end) = t_ref(end);
+        end
+    end
+    
+    event_log = aux.event_log;
+    temp_events = aux.temp_events;
+end
+
+%sends required motor voltages based on current case
+function u = compute_control_input(W, zk, q, p, t_ref, xr, xrd, yr, yrd, aux)
+    if q == 2
+        s = W - aux.t_shift;
+        s = min(max(s, t_ref(1)), t_ref(end));
+        rx = interp1(t_ref, xr, s);
+        rxd = interp1(t_ref, xrd, s);
+        ry = interp1(t_ref, yr, s);
+        ryd = interp1(t_ref, yrd, s);
+        
+        ux_ff = axisVoltage(rxd, 0, 0, p, p.bx);
+        uy_ff = axisVoltage(ryd, 0, 0, p, p.by);
+        
+        u_fb_x = p.Kp_hold*(rx - zk(1)) + p.Kd_hold*(rxd - zk(2));
+        u_fb_y = p.Kp_hold*(ry - zk(4)) + p.Kd_hold*(ryd - zk(5));
+        u = [ux_ff + u_fb_x; uy_ff + u_fb_y];
+
+    elseif ismember(q, [4, 5, 6, 11])
+        t_state = W - aux.state_entry_time;
+        [rx, rxd, rxdd, rxddd] = minJerk(aux.start_pos(1), aux.end_pos(1), aux.T_move, t_state);
+        [ry, ryd, rydd, ryddd] = minJerk(aux.start_pos(2), aux.end_pos(2), aux.T_move, t_state);
+
+        ux_ff = axisVoltage(rxd, rxdd, rxddd, p, p.bx);
+        uy_ff = axisVoltage(ryd, rydd, ryddd, p, p.by);
+
+        u_fb_x = p.Kp_hold*(rx - zk(1)) + p.Kd_hold*(rxd - zk(2));
+        u_fb_y = p.Kp_hold*(ry - zk(4)) + p.Kd_hold*(ryd - zk(5));
+        u = [ux_ff + u_fb_x; uy_ff + u_fb_y];
+        
+    else
+        hold = aux.hold_pos;
+        u = [-p.Kp_hold*(zk(1)-hold(1)) - p.Kd_hold*zk(2);
+             -p.Kp_hold*(zk(4)-hold(2)) - p.Kd_hold*zk(5)];
+    end
+end
+
+function un = nozzleVoltage(Tn, heater_on, p, q)
+    if q == 12
+        un = 0;
+    elseif q == 13 || q == 10
+        un = p.un_heat;
+    elseif ~heater_on
+        un = 0;
+    else
+        un = p.un_hold + p.Kp_nozzle*(p.Tn - Tn);
+    end
+    un = min(max(un, 0), p.un_max);
+end
+
+%define params
+function p = Params() %Q1 dynamics as function
+    p.rm=6e-3; %Motor pulley radius [m]
+    p.Lm=3e-3; %Motor inductance [H]
+    p.Rm=3;    %Motor resistance [Ohms]
+    p.Jm=6e-6;  %Motor inertia [kg/m^2]
+    p.Km=0.05;  %Motor constant [Nm/A]
+    p.m=0.15;   %mass of nozzle [kg]
+    p.mur= 0.5; %roll frict [Ns/m]
+    p.mulx=0.002; %lin bear frict x [Ns/m]
+    p.muly=0.001; %lin bear frict y [Ns/m]
+    p.Jeq=p.Jm+p.m*p.rm^2/2; %for subbing in Jeq
+    p.b1=p.mur*p.rm^2+p.rm^2/4*(p.mulx+p.muly);
+    p.b2=p.rm^2/4*(p.mulx-p.muly);
+    p.bx=p.b1+p.b2; %x damping
+    p.by=p.b1-p.b2; %y damping
+    %(x xdot i_x y ydot i_y)
+    p.A = [0 1 0 0 0 0;
+           0 -p.bx/p.Jeq p.rm*p.Km/p.Jeq 0 0 0;
+           0 -p.Km/(p.rm*p.Lm) -p.Rm/p.Lm 0 0 0;
+           0 0 0 0 1 0;
+           0 0 0 0 -p.by/p.Jeq p.rm*p.Km/p.Jeq;
+           0 0 0 0 -p.Km/(p.rm*p.Lm) -p.Rm/p.Lm];
+    p.B = [0 0; 0 0; 1/p.Lm 0; 0 0; 0 0; 0 1/p.Lm];
+    p.C = eye(6); %outputs 3x3 identity matrix
+    p.D = zeros(6,2); %uses 6x2 column zeros. not decoupled
+
+    %Thermal Params
+    p.rho=1250; %Density (PLA) [kg/m^3]
+    p.cp=1800; %Specfic heat (PLA) [J/(kgK)]
+    p.k = 0.13; %Thermal conductivity of PLA [W/(mK)]
+    p.a = 0.4e-3; %Square cross section side length [m]
+    p.Tn = 210; %Nozzle extrusion temperature [C]
+    p.Tb = 60; %Bed temperature [C]
+    p.Te = 20; %Ambient air temperature [C]
+    p.h_air = 15; %Natural convection coefficient of air[W/(m^2K)]
+    p.hb = 100; %Contact conductance [W/(m^2K)]
+    p.T_low=206; 
+    p.T_high=214; 
+    p.T_low_reset=209; 
+    p.T_high_reset=211; 
+    p.Kp_nozzle=1.5;   
+    p.Kp_hold = 1500; 
+    p.Kd_hold = 50;
+    
+    %electrical params
+    p.Ln=0.025; 
+    p.Cn=0.002; 
+    p.Rn=12; 
+    p.Ctn=0.4; 
+    p.Rtn=6;      
+    p.un_max=24; %sets upper voltage limit [V]
+    p.un_hold=sqrt((p.Tn-p.Te)*p.Rn/p.Rtn); %steady state voltage required to stay at target temp
+    p.un_heat=24; % full power heating voltage used when heating up [V]
+end
+
+%feedforward motor voltage control to make sure nozzle corrects when going
+%off course
+function u = axisVoltage(xd,xdd,xddd,p,b)
+    u = p.Lm*p.Jeq/(p.rm*p.Km)*xddd ...
+      + (p.Lm*b+p.Rm*p.Jeq)/(p.rm*p.Km)*xdd ...
+      + (p.Rm*b+p.Km^2)/(p.rm*p.Km)*xd;
+end
+
+%converts cartesian to motor voltage commands
+function [ul,ur] = voltagesLR(ux,uy)
+    ul = ux + uy;
+    ur = ux - uy;
+end
+
+%calculates required starting motor current 
+function z0 = initialState(x,xd,xdd,p,b)
+    i0 = (p.Jeq*xdd + b*xd)/(p.rm*p.Km); %for initial position
+    z0 = [x; xd; i0]; %creates a statevector so ODE starts with dynamically consistent initial conditions
+end
+
+%computes trajectory for feedforward and feedback controllers
+function [r, rd, rdd, rddd] = cubicSmooth(start_pos, end_pos, T_move, t)
+    t = min(max(t, 0), T_move);
+    tau = t / T_move;
+    s = 3*tau^2 - 2*tau^3;
+    sd = (6*tau - 6*tau^2) / T_move;
+    sdd = (6 - 12*tau) / T_move^2;
+    sddd = -12 / T_move^3;
+    r = start_pos + (end_pos - start_pos) * s;
+    rd = (end_pos - start_pos) * sd;
+    rdd = (end_pos - start_pos) * sdd;
+    rddd = (end_pos - start_pos) * sddd;
+end
+
+%smoothens trajectory during detours
+function [r, rd, rdd, rddd] = minJerk(start_pos, end_pos, T_move, t)
+    t = min(max(t, 0), T_move);
+    tau = t / T_move; %normalizes time
+    
+    s = 10*tau.^3 - 15*tau.^4 + 6*tau.^5;
+    sd = (30*tau.^2 - 60*tau.^3 + 30*tau.^4) / T_move;
+    sdd = (60*tau - 180*tau.^2 + 120*tau.^3) / T_move^2;
+    sddd = (60 - 360*tau + 360*tau.^2) / T_move^3;
+
+    r = start_pos + (end_pos - start_pos) * s;
+    rd = (end_pos - start_pos) * sd;
+    rdd = (end_pos - start_pos) * sdd;
+    rddd = (end_pos - start_pos) * sddd;
+end
+
+%used for case switching
+function out = ternary(cond, valTrue, valFalse)
+    if cond, out = valTrue; else, out = valFalse; end
+end
+
+%Determines full thermal cooling process of filament
+function [T, x_axis, t_end, time_trace, mean_trace, active_trace] = ...
+    filamentCooling(t_history,z_history,q_history,progress,t_ref,s_ref,p,dt,interrupted)
+    dx = 0.001; %spatial resolution [m]
+    L_total = s_ref(end);
+    N = ceil(L_total/dx)+1; %total spatial nodes
+    x_axis = linspace(0,L_total,N).';
+    h = x_axis(2)-x_axis(1);
+    %Thermal diffusivity
+    alpha = p.k/(p.rho*p.cp);
+    dt_stable = 0.45*h^2/alpha;
+    dt_step = min(dt,dt_stable);
+    T = NaN(N,1); %Initialize temp array (NaN=unprinted)
+    active = false(N,1);
+    eq = (p.hb*p.Tb+3*p.h_air*p.Te)/(p.hb+3*p.h_air);
+    time_trace = zeros(0,1);
+    mean_trace = zeros(0,1);
+    active_trace = zeros(0,1);
+    now = t_history(1);
+    last_progress = 0;
+    for k=1:numel(t_history)-1
+        t_next = t_history(k+1);
+        delta = t_next-now;
+        if delta < -1e-9
+            error('Thermal history times are not monotonic.');
+        end
+        depositing = q_history(k)==2 && delta>1e-10;
+        if depositing
+            progress_end = max(last_progress, min(t_ref(end),progress(k+1)));
+            s_end = interp1(t_ref,s_ref,progress_end,'linear');
+            newly = ~active & (x_axis <= s_end + 1e-12);
+            T(newly) = z_history(k+1,9);
+            active(newly) = true;
+            last_progress = progress_end;
+        end
+        if delta>1e-10
+            nsub = max(1,ceil(delta/dt_step));
+            dsub = delta/nsub;
+            for j=1:nsub
+                if any(active)
+                    ids = find(active);
+                    old = T(ids);
+                    lap = zeros(numel(ids),1);
+                    if numel(ids)>1
+                        lap(1) = (old(2)-old(1))/h^2;
+                        lap(end) = (old(end-1)-old(end))/h^2;
+                        if numel(ids)>2
+                            lap(2:end-1)=(old(1:end-2)-2*old(2:end-1)+old(3:end))/h^2;
+                        end
+                        if all(active) && numel(ids)>2
+                            lap(1)=(old(end)-2*old(1)+old(2))/h^2;
+                            lap(end)=(old(end-1)-2*old(end)+old(1))/h^2;
+                        end
+                    end
+                    source = p.hb/(p.rho*p.cp*p.a)*(p.Tb-old) ...
+                        - 3*p.h_air/(p.rho*p.cp*p.a)*(old-p.Te);
+                    T(ids) = old + dsub*(alpha*lap+source);
+                end
+            end
+        end
+        now=t_next;
+        if any(active) && (isempty(time_trace) || now>time_trace(end)+1e-9)
+            time_trace(end+1,1)=now;
+            mean_trace(end+1,1)=mean(T(active));
+            active_trace(end+1,1)=nnz(active);
+        end
+    end
+    if any(~isfinite(T(active))) %BCs
+        error('Nonfinite deposited-filament temperature detected.');
+    end
+    if ~all(active)
+        error('Filament deposition incomplete: %d of %d nodes active.',nnz(active),N);
+    end
+    nsteps=0;
+    while max(abs(T-eq))>=0.1
+        old=T;
+        lap=(circshift(old,1)-2*old+circshift(old,-1))/h^2;
+        source=p.hb/(p.rho*p.cp*p.a)*(p.Tb-old) ...
+             -3*p.h_air/(p.rho*p.cp*p.a)*(old-p.Te);
+        T=old+dt_step*(alpha*lap+source);
+        now=now+dt_step;
+        nsteps=nsteps+1;
+        if mod(nsteps,10)==0
+            time_trace(end+1,1)=now;
+            mean_trace(end+1,1)=mean(T);
+            active_trace(end+1,1)=N;
+        end
+        if now>500
+            error('Post-print thermal model did not converge within 500 s.');
+        end
+    end
+    t_end=now;
+    time_trace(end+1,1)=now;
+    mean_trace(end+1,1)=mean(T);
+    active_trace(end+1,1)=N;
+end
