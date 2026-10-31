@@ -127,15 +127,6 @@ figure;
 plot(zx(:,1),zy(:,1)); axis equal; grid on;
 xlabel('x [m]'); ylabel('y [m]');
 
-figure;
-x_axis = linspace(0, L_total, N_nodes);
-plot(x_axis, T, 'LineWidth', 1.5);
-yline(T_eq, 'r--', 'Steady State T_{eq}');
-xlabel('Position along Filament Path [m]');
-ylabel('Temperature [C]');
-title('Final Filament Temperature Distribution');
-grid on;
-
 function p = Params()
 
 p.rm=6e-3; %Motor pulley radius [m]

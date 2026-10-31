@@ -86,15 +86,6 @@ end
 hold off;
 
 figure;
-x_axis = linspace(0, L_total, N_nodes);
-plot(x_axis, T, 'LineWidth', 1.5);
-yline(T_eq, 'r--', 'Steady State T_{eq}');
-xlabel('Position along Filament Path [m]');
-ylabel('Temperature [C]');
-title('Final Filament Temperature Distribution');
-grid on;
-
-figure;
 subplot(2,1,1);
 stairs(t_sim, q_history, 'LineWidth', 1.2); grid on;
 ylabel('q\_print'); title('Finite state machine over elapsed time');
@@ -315,7 +306,7 @@ function [t_sim, z, q_history, print_progress, u_used, u_n_used, heater_history,
     aux.start_pos = [x0(1); x0(4)];
     aux.end_pos = [x0(1); x0(4)];
     aux.T_move = 0.5;
-    aux.T_wipe = 0.004 / 0.020;
+    aux.T_wipe = 0.2; %time to wipe excess filament [s]
     aux.T_off = 0.10;
     aux.T_load = 1.50;
     aux.event_log = cell(0,3);
