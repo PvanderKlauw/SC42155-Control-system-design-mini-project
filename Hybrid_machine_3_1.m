@@ -9,7 +9,7 @@ t = (0:dt:Tf)';
 %Circle equations
 cx = 0.15; cy = 0.15; %center [m]
 w = 2*pi*0.5;  %ang freq [rad/s]
-a = 0.05; b = 0.05; 
+a = 0.05; b = 0.03; 
 xr   = cx + a*cos(w*t);
 xrd  = -a*w*sin(w*t);
 xrdd = -a*w^2*cos(w*t);
@@ -142,8 +142,8 @@ function [value, isterminal, direction] = make_events(t, x, q, p, aux)
             
         case 2
             t_shift = aux.t_shift;
-            t_ev_c = ternary(p.C_colour && ~aux.colour_triggered && ~aux.filament_triggered, p.T_C, 1e6);
-            t_ev_f = ternary(p.F_enabled && ~aux.filament_triggered && ~aux.colour_triggered, t_shift + p.T_f, 1e6);
+            t_ev_c = ternary(p.C_colour && ~aux.colour_triggered, p.T_C, 1e6);
+            t_ev_f = ternary(p.F_enabled && ~aux.filament_triggered, t_shift + p.T_f, 1e6);
             t_ev_end = t_shift + aux.Tf;
             
             v1 = t - [t_ev_c; t_ev_f; t_ev_end];
@@ -434,9 +434,9 @@ function p = Params() %Q1 dynamics as function
     p.Jm=6e-6;  %Motor inertia [kg/m^2]
     p.Km=0.05;  %Motor constant [Nm/A]
     p.m=0.15;   %mass of nozzle [kg]
-    p.mur= 0.5; %roll frict [Ns/m]
-    p.mulx=0.002; %lin bear frict x [Ns/m]
-    p.muly=0.001; %lin bear frict y [Ns/m]
+    p.mur= 0.05; %roll frict [Ns/m]
+    p.mulx=0.05; %lin bear frict x [Ns/m]
+    p.muly=0.05; %lin bear frict y [Ns/m]
     p.Jeq=p.Jm+p.m*p.rm^2/2; %for subbing in Jeq
     p.b1=p.mur*p.rm^2+p.rm^2/4*(p.mulx+p.muly);
     p.b2=p.rm^2/4*(p.mulx-p.muly);
@@ -545,11 +545,11 @@ end
 %Determines full thermal cooling process of filament
 function [T, x_axis, t_end, time_trace, mean_trace, active_trace] = ...
     filamentCooling(t_history,z_history,q_history,progress,t_ref,s_ref,p,dt,interrupted)
-    dx = 0.001; %spatial resolution [m]
-    L_total = s_ref(end);
-    N = ceil(L_total/dx)+1; %total spatial nodes
-    x_axis = linspace(0,L_total,N).';
-    h = x_axis(2)-x_axis(1);
+    dx = 0.001;                 %desitred spatial resolution [m]
+    L_total = s_ref(end);       %total printed filament length
+    N = max(3,ceil(L_total/dx)); %number of unique periodic nodes
+    h = L_total/N;               %actual spatial step
+    x_axis = (0:N-1)'*h;         %prevent duplicate endpoints
     %Thermal diffusivity
     alpha = p.k/(p.rho*p.cp);
     dt_stable = 0.45*h^2/alpha;
@@ -569,15 +569,7 @@ function [T, x_axis, t_end, time_trace, mean_trace, active_trace] = ...
             error('Thermal history times are not monotonic.');
         end
         depositing = q_history(k)==2 && delta>1e-10;
-        if depositing
-            progress_end = max(last_progress, min(t_ref(end),progress(k+1)));
-            s_end = interp1(t_ref,s_ref,progress_end,'linear');
-            newly = ~active & (x_axis <= s_end + 1e-12);
-            T(newly) = z_history(k+1,9);
-            active(newly) = true;
-            last_progress = progress_end;
-        end
-        if delta>1e-10
+        if delta>1e-10 %thermal update
             nsub = max(1,ceil(delta/dt_step));
             dsub = delta/nsub;
             for j=1:nsub
@@ -601,6 +593,14 @@ function [T, x_axis, t_end, time_trace, mean_trace, active_trace] = ...
                     T(ids) = old + dsub*(alpha*lap+source);
                 end
             end
+        end
+        if depositing %node activation
+            progress_end = max(last_progress, min(t_ref(end),progress(k+1)));
+            s_end = interp1(t_ref,s_ref,progress_end,'linear');
+            newly = ~active & (x_axis <= s_end + 1e-12);
+            T(newly) = z_history(k+1,9);
+            active(newly) = true;
+            last_progress = progress_end;
         end
         now=t_next;
         if any(active) && (isempty(time_trace) || now>time_trace(end)+1e-9)

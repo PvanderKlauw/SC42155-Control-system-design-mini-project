@@ -60,7 +60,7 @@ F_tau = interp1(s_ref, t, F_distance, 'linear');
 p.T_start = 0.10;      %simulation start time [s]
 p.T_C = 0.50;          %color change trigger time [s]
 p.T_f = F_tau;         %filament progress [s]
-p.C_colour = false;    %show plots from both true and false
+p.C_colour = true;    %shows both interuptions
 
 %initial states
 x0_m = initialState(xr(1), xrd(1), xrdd(1), p, p.bx); 
@@ -112,6 +112,21 @@ if ~isempty(log_idx)
 end
 hold off;
 
+figure;
+subplot(2,1,1);
+stairs(t_sim, q_history, 'LineWidth', 1.2); grid on;
+ylabel('q\_print'); title('Finite state machine over elapsed time');
+subplot(2,1,2);
+plot(t_sim, print_progress, 'LineWidth', 1.2); grid on;
+ylabel('Printer progress [s]'); xlabel('Elapsed time [s]');
+
+figure;
+plot(thermal_time, thermal_mean, 'LineWidth', 1.3); hold on;
+yline(T_eq, 'k:', 'Equilibrium'); hold off; grid on;
+xlabel('True elapsed time [s]'); ylabel('Mean deposited filament T [C]');
+legend('With interruption', 'Equilibrium', 'Location', 'best');
+title('Q1.6 cooling on true elapsed time');
+
 %motor angular sensor reconstruction
 [theta_l, theta_r, omega_l, omega_r, x_enc, y_enc, xd_enc, yd_enc] = motorSensorsHistory(z, p);
 figure;
@@ -162,8 +177,8 @@ function [value, isterminal, direction] = make_events(t, x, q, p, aux)
             
         case 2
             t_shift = aux.t_shift;
-            t_ev_c = ternary(p.C_colour && ~aux.colour_triggered && ~aux.filament_triggered, p.T_C, 1e6);
-            t_ev_f = ternary(p.F_enabled && ~aux.filament_triggered && ~aux.colour_triggered, t_shift + p.T_f, 1e6);
+            t_ev_c = ternary(p.C_colour && ~aux.colour_triggered, p.T_C, 1e6);
+            t_ev_f = ternary(p.F_enabled && ~aux.filament_triggered, t_shift + p.T_f, 1e6);
             t_ev_end = t_shift + aux.Tf;
             
             v1 = t - [t_ev_c; t_ev_f; t_ev_end];
@@ -460,9 +475,9 @@ function p = Params() %Q1 dynamics as function
     p.Jm=6e-6;  %Motor inertia [kg/m^2]
     p.Km=0.05;  %Motor constant [Nm/A]
     p.m=0.15;   %mass of nozzle [kg]
-    p.mur= 0.5; %roll frict [Ns/m]
-    p.mulx=0.002; %lin bear frict x [Ns/m]
-    p.muly=0.001; %lin bear frict y [Ns/m]
+    p.mur= 0.05; %roll frict [Ns/m]
+    p.mulx=0.05; %lin bear frict x [Ns/m]
+    p.muly=0.05; %lin bear frict y [Ns/m]
     p.Jeq=p.Jm+p.m*p.rm^2/2; %for subbing in Jeq
     p.b1=p.mur*p.rm^2+p.rm^2/4*(p.mulx+p.muly);
     p.b2=p.rm^2/4*(p.mulx-p.muly);
@@ -608,11 +623,11 @@ end
 %determines full thermal cooling process of filament
 function [T, x_axis, t_end, time_trace, mean_trace, active_trace] = ...
     filamentCooling(t_history,z_history,q_history,progress,t_ref,s_ref,p,dt,interrupted)
-    dx = 0.001; %spatial resolution [m]
-    L_total = s_ref(end);
-    N = ceil(L_total/dx)+1; %total spatial nodes
-    x_axis = linspace(0,L_total,N).';
-    h = x_axis(2)-x_axis(1);
+    dx = 0.001;                 %desitred spatial resolution [m]
+    L_total = s_ref(end);       %total printed filament length
+    N = max(3,ceil(L_total/dx)); %number of unique periodic nodes
+    h = L_total/N;               %actual spatial step
+    x_axis = (0:N-1)'*h;         %prevent duplicate endpoints
     %thermal diffusivity
     alpha = p.k/(p.rho*p.cp);
     dt_stable = 0.45*h^2/alpha;
@@ -632,15 +647,7 @@ function [T, x_axis, t_end, time_trace, mean_trace, active_trace] = ...
             error('Thermal history times are not monotonic.');
         end
         depositing = q_history(k)==2 && delta>1e-10;
-        if depositing
-            progress_end = max(last_progress, min(t_ref(end),progress(k+1)));
-            s_end = interp1(t_ref,s_ref,progress_end,'linear');
-            newly = ~active & (x_axis <= s_end + 1e-12);
-            T(newly) = z_history(k+1,9);
-            active(newly) = true;
-            last_progress = progress_end;
-        end
-        if delta>1e-10
+        if delta>1e-10 %thermal update
             nsub = max(1,ceil(delta/dt_step));
             dsub = delta/nsub;
             for j=1:nsub
@@ -664,6 +671,14 @@ function [T, x_axis, t_end, time_trace, mean_trace, active_trace] = ...
                     T(ids) = old + dsub*(alpha*lap+source);
                 end
             end
+        end
+        if depositing %node activation
+            progress_end = max(last_progress, min(t_ref(end),progress(k+1)));
+            s_end = interp1(t_ref,s_ref,progress_end,'linear');
+            newly = ~active & (x_axis <= s_end + 1e-12);
+            T(newly) = z_history(k+1,9);
+            active(newly) = true;
+            last_progress = progress_end;
         end
         now=t_next;
         if any(active) && (isempty(time_trace) || now>time_trace(end)+1e-9)

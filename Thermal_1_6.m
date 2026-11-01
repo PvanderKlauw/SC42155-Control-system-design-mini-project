@@ -1,5 +1,4 @@
-%Ellipse
-%Parameter Definition
+%Thermal Ellipse
 clear; close all; clc;
 
 p=Params();
@@ -19,10 +18,10 @@ Dax=zeros(3,1); %outputs 3x1 column of zeros
 sys_ax=ss(Aax,Bax,Cax,Dax); %makes the statespace
 sys_ay=ss(Aay,Bax,Cax,Dax);
 
-%Ellipse Path
-cx=0.15; cy=0.15; %Centre[m]
+%ellipse Path
+cx=0.15; cy=0.15; %centre[m]
 w=2*pi*0.5;  %ang freq[rad/s]
-a=0.05; b=0.05; %Amplitudes change for elipse vs square
+a=0.05; b=0.03; %ellipse 1/2 width and height
 xr=cx+a*cos(w*t);
 xrd=a*w*-sin(w*t);
 xrdd=a*w^2*-cos(w*t);
@@ -48,11 +47,12 @@ zy=lsim(sys_ay,uy,t,y0);
 %start of 1.6
 vel = sqrt(zx(:,2).^2 + zy(:,2).^2); %vel mag
 s_path = cumtrapz(t, vel); %cumulative distance along path
-L_total = s_path(end); %total length of printed ellipse
+L_total = s_path(end); %total length of filament
 
 %Thermal Discretization
-dx = 0.001; %spatial resolution [m]
-N_nodes = ceil(L_total / dx) + 1;%total spatial nodes
+dx = 0.001; %desired spatial resolution [m]
+N_nodes = ceil(L_total / dx);%total spatial nodes
+dx = L_total/N_nodes; %actual spatial resolution [m]
 T = NaN(N_nodes, 1); %Initialize temperature array (NaN = unprinted)
 
 %Thermal diffusivity
@@ -68,17 +68,19 @@ uniform_tolerance = 0.1; % [C]
 Phi=zeros(N_nodes+1, 1);
 f_T=zeros(N_nodes, 1);
 
-%Active Printing 
+%active Printing 
 for n = 1:(length(t)-1)
-    current_length = s_path(n); %nodes currently active based on distance traveled
-    active_idx = floor(current_length / dx) + 1;
-    T(active_idx) = p.Tn; %BCs
+    %current_length = s_path(n); %nodes currently active based on distance traveled
+    active_idx = min(N_nodes, floor(s_path(end)/ dx) + 1);
+    new_idx=find(isnan(T(1:active_idx)));
+    T(new_idx) = p.Tn; %BCs
+    assert(all(~isnan(T)), 'Some filament nodes were not deposited.');
     T_new = T;
     f_T = C2*(p.Tb - T) - C3*(T - p.Te);
     
     if active_idx > 1 
         Phi(2:active_idx) = (T(1:active_idx-1) - T(2:active_idx)) * C1;
-        Phi(1) = -Phi(2); %boundary flow
+        Phi(1) = 0; %no heat flux
         T_new(1) = T(1) + Phi(1) - Phi(2) + f_T(1); %(Phi_in-Phi_out+sources)
     end
     
@@ -92,7 +94,7 @@ for n = 1:(length(t)-1)
 end
 
 T(isnan(T))=p.Tn;
-% Post-Print Cooling
+%Post-Print Cooling
 t_cool = t(end);
 cooling = true;
 
@@ -137,9 +139,9 @@ p.Km=0.05;  %Motor constant [Nm/A]
 p.m=0.15;   %mass of nozzle [kg]
 p.dx=0.35;  %change of x [m]
 p.dy=0.35;  %change in y [m]
-p.mur= 0.5; %roll frict [Ns/m]
-p.mulx=0.002; %lin bear frict x [Ns/m]
-p.muly=0.001; %lin bear frict y [Ns/m]
+p.mur= 0.05; %roll frict [Ns/m]
+p.mulx=0.05; %lin bear frict x [Ns/m]
+p.muly=0.05; %lin bear frict y [Ns/m]
 p.Jeq=p.Jm+p.m*p.rm^2/2; %for subbing in Jeq
 p.b1=p.mur*p.rm^2+p.rm^2/4*(p.mulx+p.muly);
 p.b2=p.rm^2/4*(p.mulx-p.muly);
