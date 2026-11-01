@@ -43,7 +43,7 @@ y0=initialState(yr(1),yrd(1),yrdd(1),p,p.by);
 
 %simulation (infinity)
 zx=lsim(sys_ax,ux,t,x0); %(ss, input, time)
-zy=lsim(sys_ax,uy,t,y0);
+zy=lsim(sys_ay,uy,t,y0);
 
 %plotting
 figure;
@@ -66,9 +66,9 @@ p.Km=0.05;  %Motor constant [Nm/A]
 p.m=0.15;   %mass of nozzle [kg]
 p.dx=0.35;  %change of x [m]
 p.dy=0.35;  %change in y [m]
-p.mur= 0.5; %roll frict [Ns/m]
-p.mulx=0.002; %lin bear frict x [Ns/m]
-p.muly=0.001; %lin bear frict y [Ns/m]
+p.mur= 0.05; %roll frict [Ns/m]
+p.mulx=0.05; %lin bear frict x [Ns/m]
+p.muly=0.05; %lin bear frict y [Ns/m]
 p.Jeq=p.Jm+p.m*p.rm^2/2; %for subbing in Jeq
 p.b1=p.mur*p.rm^2+p.rm^2/4*(p.mulx+p.muly);
 p.b2=p.rm^2/4*(p.mulx-p.muly);
